@@ -118,15 +118,26 @@ jobs:
             echo "EOF"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Create GitHub release
+      - name: Setup Node
         if: steps.determine.outputs.changed == 'true' && steps.determine.outputs.tag_exists == 'false'
-        run: |
-          gh release create "v${{ steps.determine.outputs.current_version }}" \
-            --title "v${{ steps.determine.outputs.current_version }}" \
-            --notes "${{ steps.release_notes.outputs.body }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - name: Publish to npm
         if: steps.determine.outputs.changed == 'true' && steps.determine.outputs.tag_exists == 'false'
         run: npm publish --access public --provenance
+
+      - name: Create GitHub release
+        if: steps.determine.outputs.changed == 'true' && steps.determine.outputs.tag_exists == 'false'
+        run: |
+          NOTES_FILE=$(mktemp)
+          cat >"$NOTES_FILE" <<'EOF'
+          ${{ steps.release_notes.outputs.body }}
+          EOF
+          gh release create "v${{ steps.determine.outputs.current_version }}" \
+            --title "v${{ steps.determine.outputs.current_version }}" \
+            --notes-file "$NOTES_FILE"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
