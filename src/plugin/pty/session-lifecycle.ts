@@ -1,4 +1,4 @@
-import { spawn, type IPty } from 'bun-pty'
+import { spawn, type IPty } from '@lydell/node-pty'
 import { RingBuffer } from './buffer.ts'
 import type { PTYSession, PTYSessionInfo, SpawnOptions } from './types.ts'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS } from '../constants.ts'

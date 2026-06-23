@@ -6,7 +6,6 @@ import { ptyWrite } from './plugin/pty/tools/write.ts'
 import { ptyRead } from './plugin/pty/tools/read.ts'
 import { ptyList } from './plugin/pty/tools/list.ts'
 import { ptyKill } from './plugin/pty/tools/kill.ts'
-import { PTYServer } from './web/server/server.ts'
 import open from 'open'
 
 const ptyOpenClientCommand = 'pty-open-background-spy'
@@ -15,7 +14,7 @@ const ptyShowServerUrlCommand = 'pty-show-server-url'
 export const PTYPlugin = async ({ client, directory }: PluginContext): Promise<PluginResult> => {
   initPermissions(client, directory)
   initManager(client)
-  let ptyServer: PTYServer | undefined
+  let ptyServer: Awaited<ReturnType<typeof import('./web/server/server.ts').PTYServer.createServer>> | undefined
 
   return {
     'command.execute.before': async (input) => {
@@ -23,12 +22,13 @@ export const PTYPlugin = async ({ client, directory }: PluginContext): Promise<P
         return
       }
       if (ptyServer === undefined) {
+        const { PTYServer } = await import('./web/server/server.ts')
         ptyServer = await PTYServer.createServer()
       }
       if (input.command === ptyOpenClientCommand) {
-        open(ptyServer.server.url.origin)
+        open(ptyServer.url.origin)
       } else if (input.command === ptyShowServerUrlCommand) {
-        const message = `PTY Sessions Web Interface URL: ${ptyServer.server.url.origin}`
+        const message = `PTY Sessions Web Interface URL: ${ptyServer.url.origin}`
         await client.session.prompt({
           path: { id: input.sessionID },
           body: {

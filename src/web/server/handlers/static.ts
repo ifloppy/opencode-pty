@@ -1,40 +1,35 @@
-import { readdirSync, statSync } from 'node:fs'
-import { extname, join, resolve } from 'node:path'
+import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
+import { extname, join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ASSET_CONTENT_TYPES } from '../../shared/constants.ts'
 
-// ----- MODULE-SCOPE CONSTANTS -----
-// Resolve project root regardless of whether we're running from source or dist/
-const MODULE_DIR = resolve(import.meta.dir, '../../../..')
-const PROJECT_ROOT = MODULE_DIR.replace(/[\\/]dist$/, '')
-const SECURITY_HEADERS = {
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-  'X-XSS-Protection': '1; mode=block',
-  'Referrer-Policy': 'strict-origin-when-cross-origin',
-  'Content-Security-Policy':
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';",
-} as const
-const STATIC_DIR = join(PROJECT_ROOT, 'dist/web')
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+const STATIC_DIR = join(MODULE_DIR, '../../../../../dist/web')
+const STATIC_DIR_SRC = join(MODULE_DIR, '../../../../dist/web')
 
-export async function buildStaticRoutes(): Promise<Record<string, Response>> {
-  const routes: Record<string, Response> = {}
-  const files = readdirSync(STATIC_DIR, { recursive: true })
+export interface StaticAsset {
+  bytes: Buffer
+  contentType: string
+}
+
+function resolveStaticDir(): string {
+  if (existsSync(STATIC_DIR)) return STATIC_DIR
+  if (existsSync(STATIC_DIR_SRC)) return STATIC_DIR_SRC
+  return STATIC_DIR
+}
+
+export async function buildStaticRoutes(): Promise<Record<string, StaticAsset>> {
+  const dir = resolveStaticDir()
+  const routes: Record<string, StaticAsset> = {}
+  const files = readdirSync(dir, { recursive: true })
   for (const file of files) {
-    if (typeof file === 'string' && !statSync(join(STATIC_DIR, file)).isDirectory()) {
+    if (typeof file === 'string' && !statSync(join(dir, file)).isDirectory()) {
       const ext = extname(file)
-      const routeKey = `/${file.replace(/\\/g, '/')}` // e.g., /assets/js/bundle.js
-      const fullPath = join(STATIC_DIR, file)
-      const fileObj = Bun.file(fullPath)
-      const contentType = fileObj.type || ASSET_CONTENT_TYPES[ext] || 'application/octet-stream'
-
-      // Buffer all files in memory
-      routes[routeKey] = new Response(await fileObj.bytes(), {
-        headers: {
-          'Content-Type': contentType,
-          'Cache-Control': 'public, max-age=31536000, immutable',
-          ...SECURITY_HEADERS,
-        },
-      })
+      const routeKey = `/${file.replace(/\\/g, '/')}`
+      routes[routeKey] = {
+        bytes: readFileSync(join(dir, file)),
+        contentType: ASSET_CONTENT_TYPES[ext] || 'application/octet-stream',
+      }
     }
   }
   return routes

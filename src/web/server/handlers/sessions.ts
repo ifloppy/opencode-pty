@@ -1,48 +1,23 @@
+import stripAnsi from 'strip-ansi'
 import { manager } from '../../../plugin/pty/manager.ts'
-import type { BunRequest } from 'bun'
 import { JsonResponse, ErrorResponse } from './responses.ts'
-import type { routes } from '../../shared/routes.ts'
 
 export function getSessions() {
-  const sessions = manager.list()
-  return new JsonResponse(sessions)
+  return new JsonResponse(manager.list())
 }
 
 export async function createSession(req: Request) {
-  let body: {
-    command: string
-    args?: string[]
-    description?: string
-    workdir?: string
-    timeoutSeconds?: number
-  }
-
+  let body: { command: string; args?: string[]; description?: string; workdir?: string; timeoutSeconds?: number }
+  try { body = await req.json() as typeof body } catch { return new ErrorResponse('Invalid JSON', 400) }
+  if (!body.command?.trim()) return new ErrorResponse('Command is required', 400)
   try {
-    body = (await req.json()) as typeof body
-  } catch {
-    return new ErrorResponse('Invalid JSON in request body', 400)
-  }
-
-  if (!body.command || typeof body.command !== 'string' || body.command.trim() === '') {
-    return new ErrorResponse('Command is required', 400)
-  }
-
-  try {
-    const session = manager.spawn({
-      command: body.command,
-      args: body.args || [],
-      title: body.description,
-      description: body.description,
-      workdir: body.workdir,
-      timeoutSeconds: body.timeoutSeconds,
-      parentSessionId: 'web-api',
-    })
-    return new JsonResponse(session)
-  } catch (error) {
-    return new ErrorResponse(
-      error instanceof Error ? error.message : 'Failed to create session',
-      400
-    )
+    return new JsonResponse(manager.spawn({
+      command: body.command, args: body.args || [], title: body.description,
+      description: body.description, workdir: body.workdir,
+      timeoutSeconds: body.timeoutSeconds, parentSessionId: 'web-api',
+    }))
+  } catch (err) {
+    return new ErrorResponse(err instanceof Error ? err.message : 'Failed to create session', 400)
   }
 }
 
@@ -51,66 +26,41 @@ export function clearSessions() {
   return new JsonResponse({ success: true })
 }
 
-export function getSession(req: BunRequest<typeof routes.session.path>) {
-  const session = manager.get(req.params.id)
-  if (!session) {
-    return new ErrorResponse('Session not found', 404)
-  }
-  return new JsonResponse(session)
+export function getSession(id: string) {
+  const s = manager.get(id)
+  return s ? new JsonResponse(s) : new ErrorResponse('Session not found', 404)
 }
 
-export async function sendInput(
-  req: BunRequest<typeof routes.session.input.path>
-): Promise<Response> {
+export async function sendInput(req: Request, id: string): Promise<Response> {
   try {
-    const body = (await req.json()) as { data: string }
-    if (!body.data || typeof body.data !== 'string') {
-      return new ErrorResponse('Data field is required and must be a string', 400)
-    }
-    const success = manager.write(req.params.id, body.data)
-    if (!success) {
-      return new ErrorResponse('Failed to write to session', 400)
-    }
-    return new JsonResponse({ success: true })
-  } catch {
-    return new ErrorResponse('Invalid JSON in request body', 400)
-  }
+    const body = await req.json() as { data: string }
+    if (!body.data) return new ErrorResponse('Data field required', 400)
+    return manager.write(id, body.data)
+      ? new JsonResponse({ success: true })
+      : new ErrorResponse('Failed to write', 400)
+  } catch { return new ErrorResponse('Invalid JSON', 400) }
 }
 
-export function cleanupSession(req: BunRequest<typeof routes.session.cleanup.path>) {
-  const success = manager.kill(req.params.id, true)
-  if (!success) {
-    return new ErrorResponse('Failed to kill session', 400)
-  }
-  return new JsonResponse({ success: true })
+export function cleanupSession(id: string) {
+  return manager.kill(id, true)
+    ? new JsonResponse({ success: true })
+    : new ErrorResponse('Failed to kill', 400)
 }
 
-export function killSession(req: BunRequest<typeof routes.session.path>) {
-  const success = manager.kill(req.params.id)
-  if (!success) {
-    return new ErrorResponse('Failed to kill session', 400)
-  }
-  return new JsonResponse({ success: true })
+export function killSession(id: string) {
+  return manager.kill(id)
+    ? new JsonResponse({ success: true })
+    : new ErrorResponse('Failed to kill', 400)
 }
 
-export function getRawBuffer(req: BunRequest<typeof routes.session.buffer.raw.path>) {
-  const bufferData = manager.getRawBuffer(req.params.id)
-  if (!bufferData) {
-    return new ErrorResponse('Session not found', 404)
-  }
-
-  return new JsonResponse(bufferData)
+export function getRawBuffer(id: string) {
+  const buf = manager.getRawBuffer(id)
+  return buf ? new JsonResponse(buf) : new ErrorResponse('Session not found', 404)
 }
 
-export function getPlainBuffer(req: BunRequest<typeof routes.session.buffer.plain.path>) {
-  const bufferData = manager.getRawBuffer(req.params.id)
-  if (!bufferData) {
-    return new ErrorResponse('Session not found', 404)
-  }
-
-  const plainText = Bun.stripANSI(bufferData.raw)
-  return new JsonResponse({
-    plain: plainText,
-    byteLength: new TextEncoder().encode(plainText).length,
-  })
+export function getPlainBuffer(id: string) {
+  const buf = manager.getRawBuffer(id)
+  if (!buf) return new ErrorResponse('Session not found', 404)
+  const plain = stripAnsi(buf.raw)
+  return new JsonResponse({ plain, byteLength: new TextEncoder().encode(plain).length })
 }

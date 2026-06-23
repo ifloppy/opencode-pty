@@ -1,11 +1,10 @@
-import type { ServerWebSocket } from 'bun'
+import { WebSocket } from 'ws'
+import type { PubSub } from '../pubsub.ts'
 import { manager } from '../../../plugin/pty/manager'
 import {
   type WSMessageServerSessionList,
   type WSMessageClientSubscribeSession,
-  type WSMessageServerError,
   type WSMessageClientUnsubscribeSession,
-  type WSMessageClientSessionList,
   type WSMessageClient,
   type WSMessageClientSpawnSession,
   type WSMessageClientInput,
@@ -17,147 +16,70 @@ import {
 } from '../../shared/types'
 
 class WebSocketHandler {
-  private sendSessionList(ws: ServerWebSocket<undefined>): void {
+  constructor(private pubsub: PubSub) {}
+
+  private sendSessionList(ws: WebSocket): void {
     const sessions = manager.list()
-    const message: WSMessageServerSessionList = { type: 'session_list', sessions }
-    ws.send(JSON.stringify(message))
+    const msg: WSMessageServerSessionList = { type: 'session_list', sessions }
+    ws.send(JSON.stringify(msg))
   }
 
-  private handleSubscribe(
-    ws: ServerWebSocket<undefined>,
-    message: WSMessageClientSubscribeSession
-  ): void {
-    const session = manager.get(message.sessionId)
+  private handleSubscribe(ws: WebSocket, msg: WSMessageClientSubscribeSession): void {
+    const session = manager.get(msg.sessionId)
     if (!session) {
-      const error: WSMessageServerError = {
-        type: 'error',
-        error: new CustomError(`Session ${message.sessionId} not found`),
-      }
-      ws.send(JSON.stringify(error))
-    } else {
-      ws.subscribe(`session:${message.sessionId}`)
-      const response: WSMessageServerSubscribedSession = {
-        type: 'subscribed',
-        sessionId: message.sessionId,
-      }
-      ws.send(JSON.stringify(response))
+      ws.send(JSON.stringify({ type: 'error', error: new CustomError(`Session ${msg.sessionId} not found`) }))
+      return
     }
+    this.pubsub.subscribe(`session:${msg.sessionId}`, ws)
+    ws.send(JSON.stringify({ type: 'subscribed', sessionId: msg.sessionId } as WSMessageServerSubscribedSession))
   }
 
-  private handleUnsubscribe(
-    ws: ServerWebSocket<undefined>,
-    message: WSMessageClientUnsubscribeSession
-  ): void {
-    const topic = `session:${message.sessionId}`
-    ws.unsubscribe(topic)
-    const response: WSMessageServerUnsubscribedSession = {
-      type: 'unsubscribed',
-      sessionId: message.sessionId,
-    }
-    ws.send(JSON.stringify(response))
+  private handleUnsubscribe(ws: WebSocket, msg: WSMessageClientUnsubscribeSession): void {
+    this.pubsub.unsubscribe(`session:${msg.sessionId}`, ws)
+    ws.send(JSON.stringify({ type: 'unsubscribed', sessionId: msg.sessionId } as WSMessageServerUnsubscribedSession))
   }
 
-  private handleSessionListRequest(
-    ws: ServerWebSocket<undefined>,
-    _message: WSMessageClientSessionList
-  ): void {
-    this.sendSessionList(ws)
+  private handleUnknown(ws: WebSocket, msg: WSMessageClient): void {
+    ws.send(JSON.stringify({ type: 'error', error: new CustomError(`Unknown message type ${msg.type}`) }))
   }
 
-  private handleUnknownMessage(ws: ServerWebSocket<undefined>, message: WSMessageClient): void {
-    const error: WSMessageServerError = {
-      type: 'error',
-      error: new CustomError(`Unknown message type ${message.type}`),
-    }
-    ws.send(JSON.stringify(error))
-  }
-
-  public handleWebSocketMessage(
-    ws: ServerWebSocket<undefined>,
-    data: string | Buffer<ArrayBuffer>
-  ): void {
-    if (typeof data !== 'string') {
-      const error: WSMessageServerError = {
-        type: 'error',
-        error: new CustomError('Binary messages are not supported yet. File an issue.'),
-      }
-      ws.send(JSON.stringify(error))
+  handleMessage(ws: WebSocket, data: unknown): void {
+    const raw = Buffer.isBuffer(data) ? data.toString() : typeof data === 'string' ? data : String(data)
+    if (data instanceof ArrayBuffer) {
+      ws.send(JSON.stringify({ type: 'error', error: new CustomError('Binary messages not supported') }))
       return
     }
     try {
-      const message: WSMessageClient = JSON.parse(data)
-
-      switch (message.type) {
-        case 'subscribe':
-          this.handleSubscribe(ws, message as WSMessageClientSubscribeSession)
-          break
-
-        case 'unsubscribe':
-          this.handleUnsubscribe(ws, message as WSMessageClientUnsubscribeSession)
-          break
-
-        case 'session_list':
-          this.handleSessionListRequest(ws, message as WSMessageClientSessionList)
-          break
-
-        case 'spawn':
-          this.handleSpawn(ws, message as WSMessageClientSpawnSession)
-          break
-
-        case 'input':
-          this.handleInput(message as WSMessageClientInput)
-          break
-
-        case 'readRaw':
-          this.handleReadRaw(ws, message as WSMessageClientReadRaw)
-          break
-
-        default:
-          this.handleUnknownMessage(ws, message)
+      const msg = JSON.parse(raw) as WSMessageClient
+      switch (msg.type) {
+        case 'subscribe': { this.handleSubscribe(ws, msg as WSMessageClientSubscribeSession); break }
+        case 'unsubscribe': { this.handleUnsubscribe(ws, msg as WSMessageClientUnsubscribeSession); break }
+        case 'session_list': { this.sendSessionList(ws); break }
+        case 'spawn': { this.handleSpawn(ws, msg as WSMessageClientSpawnSession); break }
+        case 'input': { manager.write((msg as WSMessageClientInput).sessionId, (msg as WSMessageClientInput).data); break }
+        case 'readRaw': { this.handleReadRaw(ws, msg as WSMessageClientReadRaw); break }
+        default: { this.handleUnknown(ws, msg); break }
       }
     } catch (err) {
-      const error: WSMessageServerError = {
-        type: 'error',
-        error: new CustomError(Bun.inspect(err)),
-      }
-      ws.send(JSON.stringify(error))
+      ws.send(JSON.stringify({ type: 'error', error: new CustomError(String(err)) }))
     }
   }
 
-  private handleSpawn(ws: ServerWebSocket<undefined>, message: WSMessageClientSpawnSession) {
-    const sessionInfo = manager.spawn(message)
-    if (message.subscribe) {
-      this.handleSubscribe(ws, { type: 'subscribe', sessionId: sessionInfo.id })
-    }
+  private handleSpawn(ws: WebSocket, msg: WSMessageClientSpawnSession): void {
+    const info = manager.spawn(msg)
+    if (msg.subscribe) this.handleSubscribe(ws, { type: 'subscribe', sessionId: info.id })
   }
 
-  private handleInput(message: WSMessageClientInput) {
-    manager.write(message.sessionId, message.data)
-  }
-
-  private handleReadRaw(ws: ServerWebSocket<undefined>, message: WSMessageClientReadRaw) {
-    const rawData = manager.getRawBuffer(message.sessionId)
-    if (!rawData) {
-      const error: WSMessageServerError = {
-        type: 'error',
-        error: new CustomError(`Session ${message.sessionId} not found`),
-      }
-      ws.send(JSON.stringify(error))
+  private handleReadRaw(ws: WebSocket, msg: WSMessageClientReadRaw): void {
+    const raw = manager.getRawBuffer(msg.sessionId)
+    if (!raw) {
+      ws.send(JSON.stringify({ type: 'error', error: new CustomError(`Session ${msg.sessionId} not found`) }))
       return
     }
-    const response: WSMessageServerReadRawResponse = {
-      type: 'readRawResponse',
-      sessionId: message.sessionId,
-      rawData: rawData.raw,
-    }
-    ws.send(JSON.stringify(response))
+    ws.send(JSON.stringify({ type: 'readRawResponse', sessionId: msg.sessionId, rawData: raw.raw } as WSMessageServerReadRawResponse))
   }
 }
 
-export function handleWebSocketMessage(
-  ws: ServerWebSocket<undefined>,
-  data: string | Buffer<ArrayBuffer>
-): void {
-  const handler = new WebSocketHandler()
-  handler.handleWebSocketMessage(ws, data)
+export function handleWebSocketMessage(ws: WebSocket, data: unknown, pubsub: PubSub): void {
+  new WebSocketHandler(pubsub).handleMessage(ws, data)
 }
